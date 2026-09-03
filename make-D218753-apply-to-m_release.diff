@@ -1,0 +1,72 @@
+# HG changeset patch
+# User Julian Seward <jseward@acm.org>
+# Date 1723048989 -7200
+#      Wed Aug 07 18:43:09 2024 +0200
+# Node ID adb1c7f4b40a0a1f18d5e1ce1a4300b2054c913d
+# Parent  9841877fe645276e56451a25d78ac4bf9bef62cb
+This makes D218753 apply to m_release as of 827953:bd3e4607c4fd (Tue Aug 06
+13:02:56 2024 +0000).  First apply D218753, then apply this on top.
+
+diff --git a/js/src/wasm/WasmGcObject-inl.h b/js/src/wasm/WasmGcObject-inl.h
+--- a/js/src/wasm/WasmGcObject-inl.h
++++ b/js/src/wasm/WasmGcObject-inl.h
+@@ -165,17 +165,17 @@ inline gc::AllocKind WasmArrayObject::al
+     allocKind = ForegroundToBackgroundAllocKind(allocKind);
+   }
+   return allocKind;
+ }
+ 
+ inline gc::AllocKind WasmArrayObject::allocKind() const {
+   if (isDataInline()) {
+     uint32_t storageBytes = calcStorageBytes(
+-        typeDef().arrayType().elementType_.size(), numElements_);
++        typeDef().arrayType().elementType().size(), numElements_);
+     return allocKindForIL(storageBytes);
+   }
+ 
+   return allocKindForOOL();
+ }
+ 
+ /* static */
+ template <bool ZeroFields>
+diff --git a/js/src/wasm/WasmGcObject.cpp b/js/src/wasm/WasmGcObject.cpp
+--- a/js/src/wasm/WasmGcObject.cpp
++++ b/js/src/wasm/WasmGcObject.cpp
+@@ -392,17 +392,17 @@ void WasmArrayObject::obj_finalize(JS::G
+     // malloc'd block cache because we might not be running on the main
+     // thread, and the cache isn't thread-safe.
+     js_free(arrayObj.dataHeader());
+     // And tell the tenured-heap accounting machinery that the trailer has
+     // been freed.
+     const TypeDef& typeDef = arrayObj.typeDef();
+     MOZ_ASSERT(typeDef.isArrayType());
+     size_t trailerSize = calcStorageBytes(
+-        typeDef.arrayType().elementType_.size(), arrayObj.numElements_);
++        typeDef.arrayType().elementType().size(), arrayObj.numElements_);
+     // Ensured by WasmArrayObject::createArrayNonEmpty.
+     MOZ_RELEASE_ASSERT(trailerSize <= size_t(MaxArrayPayloadBytes));
+     gcx->removeCellMemory(&arrayObj, trailerSize + TrailerBlockOverhead,
+                           MemoryUse::WasmTrailerBlock);
+     // For safety
+     arrayObj.data_ = nullptr;
+   }
+ }
+@@ -421,17 +421,17 @@ size_t WasmArrayObject::obj_moved(JSObje
+ 
+   if (IsInsideNursery(old)) {
+     Nursery& nursery = obj->runtimeFromMainThread()->gc.nursery();
+     // It's been tenured.
+     if (!arrayObj.isDataInline()) {
+       const TypeDef& typeDef = arrayObj.typeDef();
+       MOZ_ASSERT(typeDef.isArrayType());
+       size_t trailerSize = calcStorageBytes(
+-          typeDef.arrayType().elementType_.size(), arrayObj.numElements_);
++          typeDef.arrayType().elementType().size(), arrayObj.numElements_);
+       // Ensured by WasmArrayObject::createArrayOOL.
+       MOZ_RELEASE_ASSERT(trailerSize <= size_t(MaxArrayPayloadBytes));
+       nursery.trackTrailerOnPromotion(arrayObj.dataHeader(), obj, trailerSize,
+                                       TrailerBlockOverhead,
+                                       MemoryUse::WasmTrailerBlock);
+     }
+   }
+ 
