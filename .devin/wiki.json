@@ -1,0 +1,307 @@
+{
+  "repo_notes": [
+    {
+      "content": "Comprehensive knowledge base covering the end-to-end lifecycle of the SpiderMonkey WasmGC Array Subtyping Vulnerability. This repository tracks the vulnerability from zero-knowledge prerequisites to deep OS-level weaponization, engine internals, source-code patches, and ready-to-deliver presentation materials."
+    }
+  ],
+  "pages": [
+    {
+      "title": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "purpose": "Absolute beginner concepts required to understand browser exploitation. Takes a reader from zero knowledge to understanding how memory corruption works in modern JavaScript engines.",
+      "page_notes": [
+        {
+          "content": "Includes crash courses on virtual memory, the role of a JIT compiler (Baseline vs. IonMonkey), Garbage Collection concepts (Nursery vs. Tenured generation), and what it means to achieve 'arbitrary read/write' in a sandboxed process."
+        }
+      ]
+    },
+    {
+      "title": "WebAssembly & SpiderMonkey 101",
+      "purpose": "Fundamental architecture of Mozilla's SpiderMonkey engine and its integration with WebAssembly.",
+      "parent": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "page_notes": [
+        {
+          "content": "Example included: How let x = new WebAssembly.Instance(module); transitions from JavaScript through the JSAPI boundary, compiles via WasmBaseline, and executes native code. Explains JSObject vs WasmInstanceObject memory layouts."
+        }
+      ]
+    },
+    {
+      "title": "Memory Corruption & Type Confusion Primer",
+      "purpose": "Explains the theoretical basis of Type Confusion vulnerabilities.",
+      "parent": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "page_notes": [
+        {
+          "content": "Example: If a C++ engine thinks a memory region is a uint64_t but JavaScript thinks it's an Object*, an attacker can write 0x41414141 as an integer, and the engine will dereference it as a pointer. This forms the basis of the fakeobj primitive."
+        }
+      ]
+    },
+    {
+      "title": "Phase 2: WebAssembly GC Background",
+      "purpose": "Deep dive into the WasmGC proposal concepts needed to understand the vulnerability: heap types, array types, struct types, and the isorecursive type system.",
+      "page_notes": [
+        {
+          "content": "Focuses heavily on declared subtyping with the sub keyword, anyref, and type variance."
+        }
+      ]
+    },
+    {
+      "title": "WasmGC Syntax & WAT Examples",
+      "purpose": "Concrete examples of WebAssembly Text format (WAT) implementing WasmGC features.",
+      "parent": "Phase 2: WebAssembly GC Background",
+      "page_notes": [
+        {
+          "content": "Example Snippet:\nwasm\n(module\n  (type $super (sub (array anyref)))\n  (type $sub (sub$super (array (mut i64)))) ;; The core bug: invalid subtyping\n)\n\nExplains why variance rules should dictate that a mutable array of i64 cannot safely be treated as an array of anyref."
+        }
+      ]
+    },
+    {
+      "title": "Phase 3: The Type Confusion Vulnerability",
+      "purpose": "Overview of the WasmGC array subtyping type confusion bug, detailing how the flawed variance validation enables the overlapping of integers and object references.",
+      "page_notes": [
+        {
+          "content": "Maps the exact path from the WAT module declaration to the flawed SpiderMonkey C++ validator in WasmTypeDef.h."
+        }
+      ]
+    },
+    {
+      "title": "Root Cause Analysis",
+      "purpose": "Deep dive into why the engine incorrectly accepts (type $a2 (sub$a1 (array (mut i64)))) as a valid subtype.",
+      "parent": "Phase 3: The Type Confusion Vulnerability",
+      "page_notes": [
+        {
+          "content": "Details the mutability and element-type variance logic flaw. The engine failed to properly enforce that if a supertype array contains managed references (anyref), a subtype cannot redefine that storage as raw scalar data (i64) while maintaining mutability (mut)."
+        }
+      ]
+    },
+    {
+      "title": "Dynamic Analysis & GDB Debugging",
+      "purpose": "Walkthrough of analyzing the crash in a debugger.",
+      "parent": "Phase 3: The Type Confusion Vulnerability",
+      "page_notes": [
+        {
+          "content": "Example Debugging Session:\n1. Break on js::wasm::Instance::callExport.\n2. Observe memory via x/10xg $rax when array.set is called.\n3. Show how writing an i64 payload overwrites the internal JSObject pointer.\n4. Demonstrate the resulting SIGSEGV at js::gc::MarkObject when the GC tries to trace the fake pointer."
+        }
+      ]
+    },
+    {
+      "title": "Minimal Proof of Concept (reduced.js / reduced.html)",
+      "purpose": "Documents the minimal reproducer, stripping away all exploit logic to isolate the vulnerability trigger.",
+      "parent": "Phase 3: The Type Confusion Vulnerability",
+      "page_notes": [
+        {
+          "content": "Walks through the execution flow step-by-step: allocating the Array, calling the type-confused setter, and observing the immediate memory corruption or crash. Distinguishes between the CLI harness (reduced.js) and DOM harness (reduced.html)."
+        },
+        {
+          "content": "From Reduced PoC to Full Exploit (Purpose: Explains the architectural differences between the minimal reproducer and the complete exploit chain.): Provides a side-by-side comparison of reduced.js/reduced.html, the proof-of-concept exploit, and the complete exploit. Identifies which components are present in the minimal reproducer and which components are absent. Explains why the reduced version crashes but does not achieve full exploitation and describes the additional primitives and exploitation stages required for a complete exploit chain."
+        }
+      ]
+    },
+    {
+      "title": "Phase 4: Full Exploit Development",
+      "purpose": "Comprehensive guide on escalating the minimal type confusion into a full-chain memory read/write and code execution exploit.",
+      "page_notes": [
+        {
+          "content": "Bridges the gap between a simple crash and a weaponized primitive."
+        }
+      ]
+    },
+    {
+      "title": "WasmModuleBuilder Harness",
+      "purpose": "Documents the programmatic Wasm binary builder embedded in exp.html and poc.html.",
+      "parent": "Phase 4: Full Exploit Development",
+      "page_notes": [
+        {
+          "content": "Explains the WasmModuleBuilder class, LEB128 encoding, section serialization order, GC type and subtype APIs, and the toBuffer()/instantiate() lifecycle used to dynamically generate the exploit payload at runtime."
+        }
+      ]
+    },
+    {
+      "title": "Exploit Primitives: addrof, fakeobj, read64, write64",
+      "purpose": "Explains the construction of the 'Holy Grail' of browser exploitation: arbitrary R/W.",
+      "parent": "Phase 4: Full Exploit Development",
+      "page_notes": [
+        {
+          "content": "Examples:\n- addrof: Store JS Object in $super array, read out via$sub as i64 (leaks memory address).\n- fakeobj: Write i64 address via $sub array, read out via$super as JS Object (forges object).\n- read64/write64: Forge an ArrayBuffer or Uint8Array header using fakeobj, pointing its internal backing store pointer to the target memory address."
+        }
+      ]
+    },
+    {
+      "title": "Weaponization & Sandbox Escape Preparation",
+      "purpose": "Advanced level (100) documentation on what happens after arbitrary R/W is achieved.",
+      "parent": "Phase 4: Full Exploit Development",
+      "page_notes": [
+        {
+          "content": "Covers overwriting JIT code regions (if JIT mapping is RWX), ROP chain construction via corrupted TypedArrays to bypass DEP (Data Execution Prevention), and setting up the state required to chain with an IPC/Sandbox escape vulnerability to compromise the OS."
+        }
+      ]
+    },
+    {
+      "title": "Phase 5: SpiderMonkey WasmGC Internals",
+      "purpose": "Deep-level architectural reference for the internal engine components affected by the vulnerability and its patches.",
+      "page_notes": [
+        {
+          "content": "Includes memory layout diagrams, GC promotion cycles, and the Compiler backend."
+        }
+      ]
+    },
+    {
+      "title": "WasmArrayObject & mozjemalloc",
+      "purpose": "Detailed reference for WasmArrayObject memory layout in Firefox's custom allocator.",
+      "parent": "Phase 5: SpiderMonkey WasmGC Internals",
+      "page_notes": [
+        {
+          "content": "Diagrams inline vs. Out-of-Line (OOL) data storage. Explains calcStorageBytes, MaxArrayPayloadBytes, trailer block overhead, and nursery trailer tracking via trackTrailerOnPromotion. Details how jemalloc chunking affects target object placement for reliable exploitation."
+        }
+      ]
+    },
+    {
+      "title": "Type System & Compiler Code Generation",
+      "purpose": "Analyzes the C++ representation of Wasm types and how JIT compilers emit assembly for them.",
+      "parent": "Phase 5: SpiderMonkey WasmGC Internals",
+      "page_notes": [
+        {
+          "content": "Covers TypeDef, StructType, ArrayType, FieldType. Explains how Baseline and Ion compilers generate machine code for GC instructions (array.get, array.set), utilizing indexingShift-based array addressing and FieldWideningOp."
+        }
+      ]
+    },
+    {
+      "title": "Phase 6: Engine Patches and Fixes",
+      "purpose": "Line-by-line analysis of the Mozilla security patches that remediated this vulnerability.",
+      "page_notes": [
+        {
+          "content": "Breaks down added-test.diff, refactorstructs.diff, and make-D218753-apply-to-m_release.diff."
+        }
+      ]
+    },
+    {
+      "title": "StructType/ArrayType Refactoring (refactorstructs.diff)",
+      "purpose": "Documents the structural changes made to fix the root cause.",
+      "parent": "Phase 6: Engine Patches and Fixes",
+      "page_notes": [
+        {
+          "content": "Analyzes the introduction of the FieldType struct, separation of field offsets into FieldOffsetVector, the new elementType() accessor, and the strict subtyping rule enforcement added to WasmTypeDef.h."
+        }
+      ]
+    },
+    {
+      "title": "Regression Test & Backport Mechanisms",
+      "purpose": "Explains how Mozilla ensures the bug stays dead across release branches.",
+      "parent": "Phase 6: Engine Patches and Fixes",
+      "page_notes": [
+        {
+          "content": "Analyzes added-test.diff (the new JIT test declared-subtyping.js using assertCannotBeSubtype). Explains the backport patch (make-D218753-apply-to-m_release.diff) for ESR/Release channels, updating call sites in WasmGcObject-inl.h."
+        }
+      ]
+    },
+    {
+      "title": "Phase 7: Presentations and Training Materials",
+      "purpose": "Pre-built slide decks, workshop guides, and presentation outlines for communicating this vulnerability to various audiences.",
+      "page_notes": [
+        {
+          "content": "Contains raw content mappings ready to be pasted into PowerPoint or Reveal.js."
+        }
+      ]
+    },
+    {
+      "title": "Slide Deck: Executive Summary",
+      "purpose": "A 5-slide deck outline for C-level executives and management.",
+      "parent": "Phase 7: Presentations and Training Materials",
+      "page_notes": [
+        {
+          "content": "Slide 1: Title & Overview (The Threat at a Glance).\nSlide 2: Business Impact (RCE via Web Browsing, Sandbox context).\nSlide 3: The Root Cause (High-level: engine confused numbers with code pointers).\nSlide 4: Remediation & Patching Status (Versions affected, patches deployed).\nSlide 5: Lessons Learned & Defensive Posture (Why regression testing matters)."
+        }
+      ]
+    },
+    {
+      "title": "Slide Deck: Technical Deep Dive (BlackHat/DEF CON Style)",
+      "purpose": "A 20-slide technical presentation for security researchers and engineers.",
+      "parent": "Phase 7: Presentations and Training Materials",
+      "page_notes": [
+        {
+          "content": "Outline:\n- Slides 1-3: Intro to WasmGC & SpiderMonkey.\n- Slides 4-7: The 'Sub' Keyword and Variance Rules.\n- Slides 8-10: The Vulnerability (C++ diffs & WAT PoC).\n- Slides 11-14: Building addrof and fakeobj.\n- Slides 15-17: Achieving Arbitrary Read/Write.\n- Slides 18-19: The Mozilla Patch Breakdown.\n- Slide 20: Q&A and References.\nNote: Each slide entry in the repo contains speaker notes and suggested diagrams."
+        }
+      ]
+    },
+    {
+      "title": "Hands-on Workshop Labs",
+      "purpose": "Lab instructions for a 2-hour training workshop.",
+      "parent": "Phase 7: Presentations and Training Materials",
+      "page_notes": [
+        {
+          "content": "Lab 1: Compile a vulnerable build of SpiderMonkey from source.\nLab 2: Trigger the bug using reduced.js and catch it in GDB.\nLab 3: Modify the provided poc.html harness to successfully leak an object address (complete the addrof exercise).\nLab 4: Analyze the added-test.diff and verify the patch stops the exploit."
+        }
+      ]
+    },
+    {
+      "title": "Phase 8: Glossary & Appendices",
+      "purpose": "Comprehensive reference materials, definitions, and external links.",
+      "page_notes": [
+        {
+          "content": "Definitions of all codebase-specific terms (e.g., IonMonkey, Baseline, Isorecursive typing, Type Confusion, addrof, fakeobj). Includes pointers to official WasmGC specification documents and Mozilla bug trackers."
+        },
+        {
+          "content": "Learning Resources and Further Reading (Purpose: Curated collection of free resources that help readers deepen their understanding of browser exploitation, SpiderMonkey internals, WebAssembly, WasmGC, memory corruption, and type confusion vulnerabilities.): Contains official Mozilla documentation, MDN articles, WebAssembly specifications, WasmGC proposal documents, Mozilla Bugzilla discussions, engineering blogs, conference talks, academic papers, security writeups, source-code references, patch discussions, and other freely available resources. Avoids recommending books unless no equivalent free resource exists."
+        }
+      ]
+    },
+    {
+      "title": "JavaScript Foundations for Browser Exploitation",
+      "purpose": "Provides the JavaScript knowledge required to understand browser exploitation, type confusion vulnerabilities, and exploitation primitives used throughout the repository.",
+      "parent": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "page_notes": [
+        {
+          "content": "Covers JavaScript objects, primitive values vs object references, Arrays, TypedArrays, ArrayBuffers, memory-backed objects, garbage collection basics, and how modern JavaScript engines internally represent values and objects. Explains why object references behave similarly to pointers and why memory corruption vulnerabilities become dangerous inside JavaScript runtimes."
+        }
+      ]
+    },
+    {
+      "title": "Browser Exploitation Primitives: addrof, fakeobj, read/write",
+      "purpose": "Introduces the fundamental primitives commonly used during browser exploitation and explains their conceptual role before discussing SpiderMonkey-specific implementations.",
+      "parent": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "page_notes": [
+        {
+          "content": "Explains addrof, fakeobj, arbitrary read, and arbitrary write. For each primitive, describes what problem it solves, why exploit developers need it, how it works conceptually, and generic examples independent of SpiderMonkey. Includes diagrams showing how integers, pointers, and object references can become interchangeable during type confusion vulnerabilities."
+        }
+      ]
+    },
+    {
+      "title": "C and C++ Fundamentals for Browser Exploitation",
+      "purpose": "Introduces the C and C++ concepts necessary to understand SpiderMonkey source code, memory corruption vulnerabilities, and the vulnerability root cause.",
+      "parent": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "page_notes": [
+        {
+          "content": "Covers variables, stack memory, heap memory, pointers, references, structs, classes, object layouts, integer types, pointer types, casting, memory alignment, and type confusion. Connects each concept to how browser engines store and manipulate objects internally."
+        }
+      ]
+    },
+    {
+      "title": "Reading SpiderMonkey Source Code as a Beginner",
+      "purpose": "Bridges the gap between introductory C++ knowledge and the SpiderMonkey codebase examined throughout the repository.",
+      "parent": "Phase 1: 0 to 100 Onboarding (Prerequisites)",
+      "page_notes": [
+        {
+          "content": "Explains common SpiderMonkey coding patterns, class hierarchies, object ownership, memory allocation patterns, and engine-specific terminology. Every source-code example is accompanied by explanations of the underlying C++ concepts required to understand it."
+        }
+      ]
+    },
+    {
+      "title": "Exploit Primitive Construction Walkthrough",
+      "purpose": "Provides a conceptual explanation of how type confusion evolves into higher-level exploitation primitives.",
+      "parent": "Phase 4: Full Exploit Development",
+      "page_notes": [
+        {
+          "content": "Shows how a type confusion vulnerability can conceptually evolve into addrof, fakeobj, arbitrary read, and arbitrary write primitives. Includes memory diagrams, object-layout diagrams, and explanations of why each primitive represents a milestone in exploit development."
+        }
+      ]
+    },
+    {
+      "title": "Presentation Template: 10-Minute Technical Overview",
+      "purpose": "Provides a concise slide deck structure suitable for a technical audience while preserving the educational progression used throughout the repository.",
+      "parent": "Phase 7: Presentations and Training Materials",
+      "page_notes": [
+        {
+          "content": "Slide 1: Vulnerability Overview. Slide 2: JavaScript Fundamentals. Slide 3: C/C++ Fundamentals. Slide 4: SpiderMonkey and WasmGC Architecture. Slide 5: Type Systems, Arrays, and Variance Rules. Slide 6: Root Cause Analysis. Slide 7: Reduced PoC Analysis. Slide 8: Exploit Primitive Construction (addrof/fakeobj). Slide 9: Mozilla Patch Analysis. Slide 10: Lessons Learned, References, and Further Learning Resources. Designed to fit within a 10-minute presentation window."
+        }
+      ]
+    }
+  ]
+}
