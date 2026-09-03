@@ -1,0 +1,1210 @@
+diff --git a/js/src/wasm/WasmBaselineCompile.cpp b/js/src/wasm/WasmBaselineCompile.cpp
+--- a/js/src/wasm/WasmBaselineCompile.cpp
++++ b/js/src/wasm/WasmBaselineCompile.cpp
+@@ -7374,11 +7374,11 @@
+                                   PreBarrierKind preBarrierKind) {
+   // Try to use a base index store instruction if the field type fits in a
+   // shift immediate. If not we shift the index manually and then unshift
+   // it after the store. We don't use an extra register for this because we
+   // don't have any to spare on x86.
+-  uint32_t shift = arrayType.elementType_.indexingShift();
++  uint32_t shift = arrayType.elementType().indexingShift();
+   Scale scale;
+   bool shiftedIndex = false;
+   if (IsShiftInScaleRange(shift)) {
+     scale = ShiftToScale(shift);
+   } else {
+@@ -7391,13 +7391,13 @@
+       masm.rshiftPtr(Imm32(shift), index);
+     }
+   });
+ 
+   // Easy path if the field is a scalar
+-  if (!arrayType.elementType_.isRefRepr()) {
++  if (!arrayType.elementType().isRefRepr()) {
+     emitGcSetScalar<BaseIndex, NoNullCheck>(BaseIndex(data, index, scale, 0),
+-                                            arrayType.elementType_, value);
++                                            arrayType.elementType(), value);
+     return true;
+   }
+ 
+   // Create temporaries for valueAddr that is not in the prebarrier register
+   // and can be consumed by the barrier operation
+@@ -7535,13 +7535,13 @@
+   // require making ::emitGcStructSet preserve that register, which it
+   // currently doesn't.
+ 
+   uint32_t fieldIndex = structType.fields_.length();
+   while (fieldIndex-- > 0) {
+-    const StructField& field = structType.fields_[fieldIndex];
++    const FieldType& field = structType.fields_[fieldIndex];
+     StorageType type = field.type;
+-    uint32_t fieldOffset = field.offset;
++    uint32_t fieldOffset = structType.fieldOffset(fieldIndex);
+ 
+     bool areaIsOutline;
+     uint32_t areaOffset;
+     WasmStructObject::fieldOffsetToAreaAndOffset(type, fieldOffset,
+                                                  &areaIsOutline, &areaOffset);
+@@ -7624,11 +7624,11 @@
+ 
+   const StructType& structType = (*codeMeta_.types)[typeIndex].structType();
+ 
+   // Decide whether we're accessing inline or outline, and at what offset
+   StorageType fieldType = structType.fields_[fieldIndex].type;
+-  uint32_t fieldOffset = structType.fields_[fieldIndex].offset;
++  uint32_t fieldOffset = structType.fieldOffset(fieldIndex);
+ 
+   bool areaIsOutline;
+   uint32_t areaOffset;
+   WasmStructObject::fieldOffsetToAreaAndOffset(fieldType, fieldOffset,
+                                                &areaIsOutline, &areaOffset);
+@@ -7665,15 +7665,15 @@
+   if (deadCode_) {
+     return true;
+   }
+ 
+   const StructType& structType = (*codeMeta_.types)[typeIndex].structType();
+-  const StructField& structField = structType.fields_[fieldIndex];
++  const FieldType& structField = structType.fields_[fieldIndex];
+ 
+   // Decide whether we're accessing inline or outline, and at what offset
+   StorageType fieldType = structType.fields_[fieldIndex].type;
+-  uint32_t fieldOffset = structType.fields_[fieldIndex].offset;
++  uint32_t fieldOffset = structType.fieldOffset(fieldIndex);
+ 
+   bool areaIsOutline;
+   uint32_t areaOffset;
+   WasmStructObject::fieldOffsetToAreaAndOffset(fieldType, fieldOffset,
+                                                &areaIsOutline, &areaOffset);
+@@ -7843,18 +7843,18 @@
+ 
+   const ArrayType& arrayType = (*codeMeta_.types)[typeIndex].arrayType();
+ 
+   // Reserve this register early if we will need it so that it is not taken by
+   // any register used in this function.
+-  if (arrayType.elementType_.isRefRepr()) {
++  if (arrayType.elementType().isRefRepr()) {
+     needPtr(RegPtr(PreBarrierReg));
+   }
+ 
+   RegRef object = needRef();
+   RegI32 numElements = popI32();
+   if (!emitArrayAlloc<false>(typeIndex, object, numElements,
+-                             arrayType.elementType_.size())) {
++                             arrayType.elementType().size())) {
+     return false;
+   }
+ 
+   AnyReg value = popAny();
+ 
+@@ -7863,11 +7863,11 @@
+ 
+   // Acquire the number of elements again
+   numElements = emitGcArrayGetNumElements<NoNullCheck>(object);
+ 
+   // Free the barrier reg after we've allocated all registers
+-  if (arrayType.elementType_.isRefRepr()) {
++  if (arrayType.elementType().isRefRepr()) {
+     freePtr(RegPtr(PreBarrierReg));
+   }
+ 
+   // Perform an initialization loop using `numElements` as the loop variable,
+   // counting down to zero.
+@@ -7911,18 +7911,18 @@
+ 
+   const ArrayType& arrayType = (*codeMeta_.types)[typeIndex].arrayType();
+ 
+   // Reserve this register early if we will need it so that it is not taken by
+   // any register used in this function.
+-  bool avoidPreBarrierReg = arrayType.elementType_.isRefRepr();
++  bool avoidPreBarrierReg = arrayType.elementType().isRefRepr();
+   if (avoidPreBarrierReg) {
+     needPtr(RegPtr(PreBarrierReg));
+   }
+ 
+   RegRef object = needRef();
+   if (!emitArrayAllocFixed<false>(typeIndex, object, numElements,
+-                                  arrayType.elementType_.size())) {
++                                  arrayType.elementType().size())) {
+     return false;
+   }
+ 
+   // Acquire the data pointer from the object
+   RegPtr rdata = emitGcArrayGetData<NoNullCheck>(object);
+@@ -7981,11 +7981,11 @@
+   const ArrayType& arrayType = (*codeMeta_.types)[typeIndex].arrayType();
+ 
+   RegRef object = needRef();
+   RegI32 numElements = popI32();
+   if (!emitArrayAlloc<true>(typeIndex, object, numElements,
+-                            arrayType.elementType_.size())) {
++                            arrayType.elementType().size())) {
+     return false;
+   }
+ 
+   pushRef(object);
+   return true;
+@@ -8098,18 +8098,18 @@
+ 
+   // Acquire the data pointer from the object
+   RegPtr rdata = emitGcArrayGetData<NoNullCheck>(rp);
+ 
+   // Load the value
+-  uint32_t shift = arrayType.elementType_.indexingShift();
++  uint32_t shift = arrayType.elementType().indexingShift();
+   if (IsShiftInScaleRange(shift)) {
+     emitGcGet<BaseIndex, NoNullCheck>(
+-        arrayType.elementType_, wideningOp,
++        arrayType.elementType(), wideningOp,
+         BaseIndex(rdata, index, ShiftToScale(shift), 0));
+   } else {
+     masm.lshiftPtr(Imm32(shift), index);
+-    emitGcGet<BaseIndex, NoNullCheck>(arrayType.elementType_, wideningOp,
++    emitGcGet<BaseIndex, NoNullCheck>(arrayType.elementType(), wideningOp,
+                                       BaseIndex(rdata, index, TimesOne, 0));
+   }
+ 
+   freePtr(rdata);
+   freeRef(rp);
+@@ -8131,11 +8131,11 @@
+ 
+   const ArrayType& arrayType = (*codeMeta_.types)[typeIndex].arrayType();
+ 
+   // Reserve this register early if we will need it so that it is not taken by
+   // any register used in this function.
+-  if (arrayType.elementType_.isRefRepr()) {
++  if (arrayType.elementType().isRefRepr()) {
+     needPtr(RegPtr(PreBarrierReg));
+   }
+ 
+   AnyReg value = popAny();
+   RegI32 index = popI32();
+@@ -8150,11 +8150,11 @@
+ 
+   // Acquire the data pointer from the object
+   RegPtr rdata = emitGcArrayGetData<NoNullCheck>(rp);
+ 
+   // Free the barrier reg after we've allocated all registers
+-  if (arrayType.elementType_.isRefRepr()) {
++  if (arrayType.elementType().isRefRepr()) {
+     freePtr(RegPtr(PreBarrierReg));
+   }
+ 
+   // All registers are preserved. This isn't strictly necessary, as we'll just
+   // be freeing them all after this is done. But this is needed for repeated
+@@ -8227,11 +8227,11 @@
+     return true;
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+-  StorageType elementType = arrayType.elementType_;
++  StorageType elementType = arrayType.elementType();
+ 
+   // On x86 (32-bit), we are very short of registers, hence the code
+   // generation scheme is less straightforward than it might otherwise be.
+   //
+   // Comment lines below of the form
+@@ -8386,11 +8386,11 @@
+   // 3: index rp rdata
+ 
+   // Currently `rdata` points at the start of the array data area.  Move it
+   // forwards by `index` units so as to make it point at the start of the area
+   // to be filled.
+-  uint32_t shift = arrayType.elementType_.indexingShift();
++  uint32_t shift = arrayType.elementType().indexingShift();
+   if (shift > 0) {
+     masm.lshift32(Imm32(shift), index);
+     // `index` is a 32 bit value, so we must zero-extend it to 64 bits before
+     // adding it on to `rdata`.
+ #  ifdef JS_64BIT
+diff --git a/js/src/wasm/WasmDump.cpp b/js/src/wasm/WasmDump.cpp
+--- a/js/src/wasm/WasmDump.cpp
++++ b/js/src/wasm/WasmDump.cpp
+@@ -191,11 +191,11 @@
+ 
+ void wasm::Dump(const StructType& structType, IndentedPrinter& out) {
+   out.printf("(struct\n");
+   {
+     IndentedPrinter::AutoIndent innerIndent(out);
+-    for (const StructField& field : structType.fields_) {
++    for (const FieldType& field : structType.fields_) {
+       out.printf("(field ");
+       if (field.isMutable) {
+         out.printf("(mut ");
+       }
+       Dump(field.type, out);
+@@ -214,15 +214,15 @@
+   wasm::Dump(arrayType, out);
+ }
+ 
+ void wasm::Dump(const ArrayType& arrayType, IndentedPrinter& out) {
+   out.printf("(array ");
+-  if (arrayType.isMutable_) {
++  if (arrayType.isMutable()) {
+     out.printf("(mut ");
+   }
+-  Dump(arrayType.elementType_, out);
+-  if (arrayType.isMutable_) {
++  Dump(arrayType.elementType(), out);
++  if (arrayType.isMutable()) {
+     out.printf(")");
+   }
+   out.printf(")\n");
+ }
+ 
+diff --git a/js/src/wasm/WasmGcObject-inl.h b/js/src/wasm/WasmGcObject-inl.h
+--- a/js/src/wasm/WasmGcObject-inl.h
++++ b/js/src/wasm/WasmGcObject-inl.h
+@@ -169,11 +169,11 @@
+ 
+ inline gc::AllocKind WasmArrayObject::allocKind() const {
+   if (isDataInline()) {
+     // numElements_ was validated to not overflow when constructing this object
+     uint32_t storageBytes = calcStorageBytesUnchecked(
+-        typeDef().arrayType().elementType_.size(), numElements_);
++        typeDef().arrayType().elementType().size(), numElements_);
+     return allocKindForIL(storageBytes);
+   }
+ 
+   return allocKindForOOL();
+ }
+@@ -336,11 +336,11 @@
+ template <bool ZeroFields>
+ MOZ_ALWAYS_INLINE WasmArrayObject* WasmArrayObject::createArray(
+     JSContext* cx, wasm::TypeDefInstanceData* typeDefData,
+     js::gc::Heap initialHeap, uint32_t numElements) {
+   MOZ_ASSERT(typeDefData->arrayElemSize ==
+-             typeDefData->typeDef->arrayType().elementType_.size());
++             typeDefData->typeDef->arrayType().elementType().size());
+   mozilla::CheckedUint32 storageBytes =
+       calcStorageBytesChecked(typeDefData->arrayElemSize, numElements);
+   if (!storageBytes.isValid() ||
+       storageBytes.value() > uint32_t(wasm::MaxArrayPayloadBytes)) {
+     wasm::ReportTrapError(cx, JSMSG_WASM_ARRAY_IMP_LIMIT);
+diff --git a/js/src/wasm/WasmGcObject.h b/js/src/wasm/WasmGcObject.h
+--- a/js/src/wasm/WasmGcObject.h
++++ b/js/src/wasm/WasmGcObject.h
+@@ -84,12 +84,12 @@
+   // WasmGcObject::loadValue.  It is distinct from a normal uint32_t to
+   // emphasise the fact that it cannot be interpreted as an offset in any
+   // single contiguous area of memory:
+   //
+   // * If the object in question is a WasmStructObject, it is the value of
+-  //   `wasm::StructField::offset` for the relevant field, without regard to
+-  //   the inline/outline split.
++  //   `wasm::StructType::fieldOffset()` for the relevant field, without regard
++  //   to the inline/outline split.
+   //
+   // * If the object in question is a WasmArrayObject, then
+   //   - u32 == UINT32_MAX (0xFFFF'FFFF) means the "length" property
+   //     is requested
+   //   - u32 < UINT32_MAX means the array element starting at that byte
+diff --git a/js/src/wasm/WasmGcObject.cpp b/js/src/wasm/WasmGcObject.cpp
+--- a/js/src/wasm/WasmGcObject.cpp
++++ b/js/src/wasm/WasmGcObject.cpp
+@@ -236,13 +236,12 @@
+       if (index >= structType.fields_.length()) {
+         JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
+                                  JSMSG_WASM_OUT_OF_BOUNDS);
+         return false;
+       }
+-      const StructField& field = structType.fields_[index];
+-      offset->set(field.offset);
+-      *type = field.type;
++      offset->set(structType.fieldOffset(index));
++      *type = structType.fields_[index].type;
+       return true;
+     }
+     case wasm::TypeDefKind::Array: {
+       const auto& arrayType = obj->typeDef().arrayType();
+ 
+@@ -253,17 +252,17 @@
+       uint32_t numElements = obj->as<WasmArrayObject>().numElements_;
+       if (index >= numElements) {
+         return false;
+       }
+       uint64_t scaledIndex =
+-          uint64_t(index) * uint64_t(arrayType.elementType_.size());
++          uint64_t(index) * uint64_t(arrayType.elementType().size());
+       if (scaledIndex >= uint64_t(UINT32_MAX)) {
+         // It's unrepresentable as an WasmGcObject::PropOffset.  Give up.
+         return false;
+       }
+       offset->set(uint32_t(scaledIndex));
+-      *type = arrayType.elementType_;
++      *type = arrayType.elementType();
+       return true;
+     }
+     default:
+       MOZ_ASSERT_UNREACHABLE();
+       return false;
+@@ -357,16 +356,16 @@
+   WasmArrayObject& arrayObj = object->as<WasmArrayObject>();
+   uint8_t* data = arrayObj.data_;
+ 
+   const auto& typeDef = arrayObj.typeDef();
+   const auto& arrayType = typeDef.arrayType();
+-  if (!arrayType.elementType_.isRefRepr()) {
++  if (!arrayType.elementType().isRefRepr()) {
+     return;
+   }
+ 
+   uint32_t numElements = arrayObj.numElements_;
+-  uint32_t elemSize = arrayType.elementType_.size();
++  uint32_t elemSize = arrayType.elementType().size();
+   for (uint32_t i = 0; i < numElements; i++) {
+     AnyRef* elementPtr = reinterpret_cast<AnyRef*>(data + i * elemSize);
+     TraceManuallyBarrieredEdge(trc, elementPtr, "wasm-array-element");
+   }
+ }
+@@ -387,11 +386,11 @@
+     const TypeDef& typeDef = arrayObj.typeDef();
+     MOZ_ASSERT(typeDef.isArrayType());
+     // arrayObj.numElements_ was validated to not overflow when constructing the
+     // array
+     size_t trailerSize = calcStorageBytesUnchecked(
+-        typeDef.arrayType().elementType_.size(), arrayObj.numElements_);
++        typeDef.arrayType().elementType().size(), arrayObj.numElements_);
+     // Ensured by WasmArrayObject::createArrayNonEmpty.
+     MOZ_RELEASE_ASSERT(trailerSize <= size_t(MaxArrayPayloadBytes));
+     gcx->removeCellMemory(&arrayObj, trailerSize + TrailerBlockOverhead,
+                           MemoryUse::WasmTrailerBlock);
+     // For safety
+@@ -418,11 +417,11 @@
+       const TypeDef& typeDef = arrayObj.typeDef();
+       MOZ_ASSERT(typeDef.isArrayType());
+       // arrayObj.numElements_ was validated not to overflow when constructing
+       // the array
+       size_t trailerSize = calcStorageBytesUnchecked(
+-          typeDef.arrayType().elementType_.size(), arrayObj.numElements_);
++          typeDef.arrayType().elementType().size(), arrayObj.numElements_);
+       // Ensured by WasmArrayObject::createArrayOOL.
+       MOZ_RELEASE_ASSERT(trailerSize <= size_t(MaxArrayPayloadBytes));
+       nursery.trackTrailerOnPromotion(arrayObj.dataHeader(), obj, trailerSize,
+                                       TrailerBlockOverhead,
+                                       MemoryUse::WasmTrailerBlock);
+@@ -432,24 +431,24 @@
+   return 0;
+ }
+ 
+ void WasmArrayObject::storeVal(const Val& val, uint32_t itemIndex) {
+   const ArrayType& arrayType = typeDef().arrayType();
+-  size_t elementSize = arrayType.elementType_.size();
++  size_t elementSize = arrayType.elementType().size();
+   MOZ_ASSERT(itemIndex < numElements_);
+   uint8_t* data = data_ + elementSize * itemIndex;
+-  WriteValTo(val, arrayType.elementType_, data);
++  WriteValTo(val, arrayType.elementType(), data);
+ }
+ 
+ void WasmArrayObject::fillVal(const Val& val, uint32_t itemIndex,
+                               uint32_t len) {
+   const ArrayType& arrayType = typeDef().arrayType();
+-  size_t elementSize = arrayType.elementType_.size();
++  size_t elementSize = arrayType.elementType().size();
+   uint8_t* data = data_ + elementSize * itemIndex;
+   MOZ_ASSERT(itemIndex <= numElements_ && len <= numElements_ - itemIndex);
+   for (uint32_t i = 0; i < len; i++) {
+-    WriteValTo(val, arrayType.elementType_, data);
++    WriteValTo(val, arrayType.elementType(), data);
+     data += elementSize;
+   }
+ }
+ 
+ static const JSClassOps WasmArrayObjectClassOps = {
+@@ -511,13 +510,14 @@
+ 
+ bool WasmStructObject::getField(JSContext* cx, uint32_t index,
+                                 MutableHandle<Value> val) {
+   const StructType& resultType = typeDef().structType();
+   MOZ_ASSERT(index <= resultType.fields_.length());
+-  const StructField& field = resultType.fields_[index];
++  const FieldType& field = resultType.fields_[index];
++  uint32_t fieldOffset = resultType.fieldOffset(index);
+   StorageType ty = field.type.storageType();
+-  return ToJSValue(cx, fieldOffsetToAddress(ty, field.offset), ty, val);
++  return ToJSValue(cx, fieldOffsetToAddress(ty, fieldOffset), ty, val);
+ }
+ 
+ /* static */
+ void WasmStructObject::obj_trace(JSTracer* trc, JSObject* object) {
+   WasmStructObject& structObj = object->as<WasmStructObject>();
+@@ -576,11 +576,11 @@
+ }
+ 
+ void WasmStructObject::storeVal(const Val& val, uint32_t fieldIndex) {
+   const StructType& structType = typeDef().structType();
+   StorageType fieldType = structType.fields_[fieldIndex].type;
+-  uint32_t fieldOffset = structType.fields_[fieldIndex].offset;
++  uint32_t fieldOffset = structType.fieldOffset(fieldIndex);
+ 
+   MOZ_ASSERT(fieldIndex < structType.fields_.length());
+   bool areaIsOutline;
+   uint32_t areaOffset;
+   fieldOffsetToAreaAndOffset(fieldType, fieldOffset, &areaIsOutline,
+diff --git a/js/src/wasm/WasmInstance.cpp b/js/src/wasm/WasmInstance.cpp
+--- a/js/src/wasm/WasmInstance.cpp
++++ b/js/src/wasm/WasmInstance.cpp
+@@ -1512,11 +1512,11 @@
+                               const DataSegment* seg, uint32_t segByteOffset,
+                               uint32_t numElements) {
+   // Compute the number of bytes to copy, ensuring it's below 2^32.
+   CheckedUint32 numBytesToCopy =
+       CheckedUint32(numElements) *
+-      CheckedUint32(typeDef->arrayType().elementType_.size());
++      CheckedUint32(typeDef->arrayType().elementType().size());
+   if (!numBytesToCopy.isValid()) {
+     // Because the request implies that 2^32 or more bytes are to be copied.
+     ReportTrapError(cx, JSMSG_WASM_OUT_OF_BOUNDS);
+     return false;
+   }
+@@ -1663,11 +1663,11 @@
+   const TypeDef* typeDef = typeDefData->typeDef;
+ 
+   // Any data coming from an element segment will be an AnyRef. Writes into
+   // array memory are done with raw pointers, so we must ensure here that the
+   // destination size is correct.
+-  MOZ_RELEASE_ASSERT(typeDef->arrayType().elementType_.size() ==
++  MOZ_RELEASE_ASSERT(typeDef->arrayType().elementType().size() ==
+                      sizeof(AnyRef));
+ 
+   Rooted<WasmArrayObject*> arrayObj(
+       cx,
+       WasmArrayObject::createArray<true>(
+@@ -1769,11 +1769,11 @@
+   const TypeDef* typeDef = typeDefData->typeDef;
+ 
+   // Any data coming from an element segment will be an AnyRef. Writes into
+   // array memory are done with raw pointers, so we must ensure here that the
+   // destination size is correct.
+-  MOZ_RELEASE_ASSERT(typeDef->arrayType().elementType_.size() ==
++  MOZ_RELEASE_ASSERT(typeDef->arrayType().elementType().size() ==
+                      sizeof(AnyRef));
+ 
+   // Get hold of the array.
+   Rooted<WasmArrayObject*> arrayObj(cx, static_cast<WasmArrayObject*>(array));
+   MOZ_RELEASE_ASSERT(arrayObj->is<WasmArrayObject>());
+@@ -1967,12 +1967,12 @@
+ template <bool isMutable>
+ static WasmArrayObject* UncheckedCastToArrayI16(HandleAnyRef ref) {
+   JSObject& object = ref.toJSObject();
+   WasmArrayObject& array = object.as<WasmArrayObject>();
+   DebugOnly<const ArrayType*> type(&array.typeDef().arrayType());
+-  MOZ_ASSERT(type->elementType_ == StorageType::I16);
+-  MOZ_ASSERT(type->isMutable_ == isMutable);
++  MOZ_ASSERT(type->elementType() == StorageType::I16);
++  MOZ_ASSERT(type->isMutable() == isMutable);
+   return &array;
+ }
+ 
+ /* static */
+ int32_t Instance::stringTest(Instance* instance, void* stringArg) {
+@@ -2386,11 +2386,11 @@
+       if (typeDef.kind() == TypeDefKind::Struct) {
+         typeDefData->structTypeSize = typeDef.structType().size_;
+         // StructLayout::close ensures this is an integral number of words.
+         MOZ_ASSERT((typeDefData->structTypeSize % sizeof(uintptr_t)) == 0);
+       } else {
+-        uint32_t arrayElemSize = typeDef.arrayType().elementType_.size();
++        uint32_t arrayElemSize = typeDef.arrayType().elementType().size();
+         typeDefData->arrayElemSize = arrayElemSize;
+         MOZ_ASSERT(arrayElemSize == 16 || arrayElemSize == 8 ||
+                    arrayElemSize == 4 || arrayElemSize == 2 ||
+                    arrayElemSize == 1);
+       }
+diff --git a/js/src/wasm/WasmIonCompile.cpp b/js/src/wasm/WasmIonCompile.cpp
+--- a/js/src/wasm/WasmIonCompile.cpp
++++ b/js/src/wasm/WasmIonCompile.cpp
+@@ -4462,15 +4462,15 @@
+ 
+   // Helper function for EmitStruct{New,Set}: given a MIR pointer to a
+   // WasmStructObject, a MIR pointer to a value, and a field descriptor,
+   // generate MIR to write the value to the relevant field in the object.
+   [[nodiscard]] bool writeValueToStructField(
+-      uint32_t lineOrBytecode, const StructField& field,
+-      MDefinition* structObject, MDefinition* value,
++      uint32_t lineOrBytecode, const StructType& structType,
++      uint32_t fieldIndex, MDefinition* structObject, MDefinition* value,
+       WasmPreBarrierKind preBarrierKind) {
+-    StorageType fieldType = field.type;
+-    uint32_t fieldOffset = field.offset;
++    StorageType fieldType = structType.fields_[fieldIndex].type;
++    uint32_t fieldOffset = structType.fieldOffset(fieldIndex);
+ 
+     bool areaIsOutline;
+     uint32_t areaOffset;
+     WasmStructObject::fieldOffsetToAreaAndOffset(fieldType, fieldOffset,
+                                                  &areaIsOutline, &areaOffset);
+@@ -4513,14 +4513,14 @@
+ 
+   // Helper function for EmitStructGet: given a MIR pointer to a
+   // WasmStructObject, a field descriptor and a field widening operation,
+   // generate MIR to read the value from the relevant field in the object.
+   [[nodiscard]] MDefinition* readValueFromStructField(
+-      const StructField& field, FieldWideningOp wideningOp,
+-      MDefinition* structObject) {
+-    StorageType fieldType = field.type;
+-    uint32_t fieldOffset = field.offset;
++      const StructType& structType, uint32_t fieldIndex,
++      FieldWideningOp wideningOp, MDefinition* structObject) {
++    StorageType fieldType = structType.fields_[fieldIndex].type;
++    uint32_t fieldOffset = structType.fieldOffset(fieldIndex);
+ 
+     bool areaIsOutline;
+     uint32_t areaOffset;
+     WasmStructObject::fieldOffsetToAreaAndOffset(fieldType, fieldOffset,
+                                                  &areaIsOutline, &areaOffset);
+@@ -4698,11 +4698,11 @@
+                                const ArrayType& arrayType,
+                                MDefinition* arrayObject, MDefinition* index,
+                                MDefinition* numElements, MDefinition* val,
+                                WasmPreBarrierKind preBarrierKind) {
+     mozilla::DebugOnly<MIRType> valMIRType = val->type();
+-    StorageType elemType = arrayType.elementType_;
++    StorageType elemType = arrayType.elementType();
+     MOZ_ASSERT(elemType.widenToValType().toMIRType() == valMIRType);
+ 
+     uint32_t elemSize = elemType.size();
+     MOZ_ASSERT(elemSize >= 1 && elemSize <= 16);
+ 
+@@ -4825,11 +4825,11 @@
+     const ArrayType& arrayType = (*codeMeta_.types)[typeIndex].arrayType();
+ 
+     // Create the array object, uninitialized.
+     MDefinition* arrayObject =
+         createArrayObject(lineOrBytecode, typeIndex, numElements,
+-                          arrayType.elementType_.size(), /*zeroFields=*/false);
++                          arrayType.elementType().size(), /*zeroFields=*/false);
+     if (!arrayObject) {
+       return nullptr;
+     }
+ 
+     // Optimisation opportunity: if the fill value is zero, maybe we should
+@@ -7754,13 +7754,12 @@
+   for (uint32_t fieldIndex = 0; fieldIndex < structType.fields_.length();
+        fieldIndex++) {
+     if (!f.mirGen().ensureBallast()) {
+       return false;
+     }
+-    const StructField& field = structType.fields_[fieldIndex];
+-    if (!f.writeValueToStructField(lineOrBytecode, field, structObject,
+-                                   args[fieldIndex],
++    if (!f.writeValueToStructField(lineOrBytecode, structType, fieldIndex,
++                                   structObject, args[fieldIndex],
+                                    WasmPreBarrierKind::None)) {
+       return false;
+     }
+   }
+ 
+@@ -7824,12 +7823,12 @@
+ 
+   // Check for null is done at writeValueToStructField.
+ 
+   // And fill in the field.
+   const StructType& structType = (*f.codeMeta().types)[typeIndex].structType();
+-  const StructField& field = structType.fields_[fieldIndex];
+-  return f.writeValueToStructField(lineOrBytecode, field, structObject, value,
++  return f.writeValueToStructField(lineOrBytecode, structType, fieldIndex,
++                                   structObject, value,
+                                    WasmPreBarrierKind::Normal);
+ }
+ 
+ static bool EmitStructGet(FunctionCompiler& f, FieldWideningOp wideningOp) {
+   uint32_t typeIndex;
+@@ -7846,13 +7845,12 @@
+ 
+   // Check for null is done at readValueFromStructField.
+ 
+   // And fetch the data.
+   const StructType& structType = (*f.codeMeta().types)[typeIndex].structType();
+-  const StructField& field = structType.fields_[fieldIndex];
+-  MDefinition* load =
+-      f.readValueFromStructField(field, wideningOp, structObject);
++  MDefinition* load = f.readValueFromStructField(structType, fieldIndex,
++                                                 wideningOp, structObject);
+   if (!load) {
+     return false;
+   }
+ 
+   f.iter().setResult(load);
+@@ -7902,11 +7900,11 @@
+ 
+   // Create the array object, default-initialized.
+   const ArrayType& arrayType = (*f.codeMeta().types)[typeIndex].arrayType();
+   MDefinition* arrayObject =
+       f.createArrayObject(lineOrBytecode, typeIndex, numElements,
+-                          arrayType.elementType_.size(), /*zeroFields=*/true);
++                          arrayType.elementType().size(), /*zeroFields=*/true);
+   if (!arrayObject) {
+     return false;
+   }
+ 
+   f.iter().setResult(arrayObject);
+@@ -7933,11 +7931,11 @@
+     return false;
+   }
+ 
+   // Create the array object, uninitialized.
+   const ArrayType& arrayType = (*f.codeMeta().types)[typeIndex].arrayType();
+-  StorageType elemType = arrayType.elementType_;
++  StorageType elemType = arrayType.elementType();
+   uint32_t elemSize = elemType.size();
+   MDefinition* arrayObject =
+       f.createArrayObject(lineOrBytecode, typeIndex, numElementsDef, elemSize,
+                           /*zeroFields=*/false);
+   if (!arrayObject) {
+@@ -8164,11 +8162,11 @@
+     return false;
+   }
+ 
+   // And do the store.
+   const ArrayType& arrayType = (*f.codeMeta().types)[typeIndex].arrayType();
+-  StorageType elemType = arrayType.elementType_;
++  StorageType elemType = arrayType.elementType();
+   uint32_t elemSize = elemType.size();
+   MOZ_ASSERT(elemSize >= 1 && elemSize <= 16);
+ 
+   return f.writeGcValueAtBasePlusScaledIndex(
+       lineOrBytecode, elemType, arrayObject, AliasSet::WasmArrayDataArea, value,
+@@ -8196,11 +8194,11 @@
+     return false;
+   }
+ 
+   // And do the load.
+   const ArrayType& arrayType = (*f.codeMeta().types)[typeIndex].arrayType();
+-  StorageType elemType = arrayType.elementType_;
++  StorageType elemType = arrayType.elementType();
+ 
+   MDefinition* load =
+       f.readGcArrayValueAtIndex(elemType, wideningOp, arrayObject,
+                                 AliasSet::WasmArrayDataArea, base, index);
+   if (!load) {
+diff --git a/js/src/wasm/WasmOpIter.h b/js/src/wasm/WasmOpIter.h
+--- a/js/src/wasm/WasmOpIter.h
++++ b/js/src/wasm/WasmOpIter.h
+@@ -3508,11 +3508,11 @@
+ 
+   if (!popWithType(ValType::I32, numElements)) {
+     return false;
+   }
+ 
+-  if (!popWithType(arrayType.elementType_.widenToValType(), argValue)) {
++  if (!popWithType(arrayType.elementType().widenToValType(), argValue)) {
+     return false;
+   }
+ 
+   return push(RefType::fromTypeDef(&typeDef, false));
+ }
+@@ -3541,11 +3541,11 @@
+ 
+   if (!values->reserve(*numElements)) {
+     return false;
+   }
+ 
+-  ValType widenedElementType = arrayType.elementType_.widenToValType();
++  ValType widenedElementType = arrayType.elementType().widenToValType();
+   for (uint32_t i = 0; i < *numElements; i++) {
+     Value v;
+     if (!popWithType(widenedElementType, &v)) {
+       return false;
+     }
+@@ -3569,11 +3569,11 @@
+ 
+   if (!popWithType(ValType::I32, numElements)) {
+     return false;
+   }
+ 
+-  if (!arrayType.elementType_.isDefaultable()) {
++  if (!arrayType.elementType().isDefaultable()) {
+     return fail("array must be defaultable");
+   }
+ 
+   return push(RefType::fromTypeDef(&typeDef, false));
+ }
+@@ -3592,11 +3592,11 @@
+     return fail("unable to read segment index");
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(*typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+-  StorageType elemType = arrayType.elementType_;
++  StorageType elemType = arrayType.elementType();
+   if (!elemType.isNumber() && !elemType.isPacked() && !elemType.isVector()) {
+     return fail("element type must be i8/i16/i32/i64/f32/f64/v128");
+   }
+   if (codeMeta_.dataCount.isNothing()) {
+     return fail("datacount section missing");
+@@ -3629,11 +3629,11 @@
+     return fail("unable to read segment index");
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(*typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+-  StorageType dstElemType = arrayType.elementType_;
++  StorageType dstElemType = arrayType.elementType();
+   if (!dstElemType.isRefType()) {
+     return fail("element type is not a reftype");
+   }
+   if (*segIndex >= codeMeta_.elemSegmentTypes.length()) {
+     return fail("segment index is out of range");
+@@ -3670,15 +3670,15 @@
+     return fail("unable to read segment index");
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(*typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+-  StorageType elemType = arrayType.elementType_;
++  StorageType elemType = arrayType.elementType();
+   if (!elemType.isNumber() && !elemType.isPacked() && !elemType.isVector()) {
+     return fail("element type must be i8/i16/i32/i64/f32/f64/v128");
+   }
+-  if (!arrayType.isMutable_) {
++  if (!arrayType.isMutable()) {
+     return fail("destination array is not mutable");
+   }
+   if (codeMeta_.dataCount.isNothing()) {
+     return fail("datacount section missing");
+   }
+@@ -3713,12 +3713,12 @@
+     return fail("unable to read segment index");
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(*typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+-  StorageType dstElemType = arrayType.elementType_;
+-  if (!arrayType.isMutable_) {
++  StorageType dstElemType = arrayType.elementType();
++  if (!arrayType.isMutable()) {
+     return fail("destination array is not mutable");
+   }
+   if (!dstElemType.isRefType()) {
+     return fail("element type is not a reftype");
+   }
+@@ -3763,11 +3763,11 @@
+ 
+   if (!popWithType(RefType::fromTypeDef(&typeDef, true), ptr)) {
+     return false;
+   }
+ 
+-  StorageType elementType = arrayType.elementType_;
++  StorageType elementType = arrayType.elementType();
+ 
+   if (elementType.isValType() && wideningOp != FieldWideningOp::None) {
+     return fail("must not specify signedness for unpacked element type");
+   }
+ 
+@@ -3788,15 +3788,15 @@
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(*typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+ 
+-  if (!arrayType.isMutable_) {
++  if (!arrayType.isMutable()) {
+     return fail("array is not mutable");
+   }
+ 
+-  if (!popWithType(arrayType.elementType_.widenToValType(), val)) {
++  if (!popWithType(arrayType.elementType().widenToValType(), val)) {
+     return false;
+   }
+ 
+   if (!popWithType(ValType::I32, index)) {
+     return false;
+@@ -3840,13 +3840,13 @@
+   // * the element types are incompatible
+   const TypeDef& dstTypeDef = codeMeta_.types->type(dstTypeIndex);
+   const ArrayType& dstArrayType = dstTypeDef.arrayType();
+   const TypeDef& srcTypeDef = codeMeta_.types->type(srcTypeIndex);
+   const ArrayType& srcArrayType = srcTypeDef.arrayType();
+-  StorageType dstElemType = dstArrayType.elementType_;
+-  StorageType srcElemType = srcArrayType.elementType_;
+-  if (!dstArrayType.isMutable_) {
++  StorageType dstElemType = dstArrayType.elementType();
++  StorageType srcElemType = srcArrayType.elementType();
++  if (!dstArrayType.isMutable()) {
+     return fail("destination array is not mutable");
+   }
+ 
+   if (!checkIsSubtypeOf(srcElemType, dstElemType)) {
+     return fail("incompatible element types");
+@@ -3885,18 +3885,18 @@
+     return false;
+   }
+ 
+   const TypeDef& typeDef = codeMeta_.types->type(*typeIndex);
+   const ArrayType& arrayType = typeDef.arrayType();
+-  if (!arrayType.isMutable_) {
++  if (!arrayType.isMutable()) {
+     return fail("destination array is not mutable");
+   }
+ 
+   if (!popWithType(ValType::I32, length)) {
+     return false;
+   }
+-  if (!popWithType(arrayType.elementType_.widenToValType(), val)) {
++  if (!popWithType(arrayType.elementType().widenToValType(), val)) {
+     return false;
+   }
+   if (!popWithType(ValType::I32, index)) {
+     return false;
+   }
+diff --git a/js/src/wasm/WasmPI.cpp b/js/src/wasm/WasmPI.cpp
+--- a/js/src/wasm/WasmPI.cpp
++++ b/js/src/wasm/WasmPI.cpp
+@@ -1753,11 +1753,11 @@
+ 
+   // Construct the results object.
+   Rooted<WasmStructObject*> results(
+       cx, instance->constantStructNewDefault(
+               cx, SuspendingFunctionModuleFactory::ResultsTypeIndex));
+-  const StructFieldVector& fields = results->typeDef().structType().fields_;
++  const FieldTypeVector& fields = results->typeDef().structType().fields_;
+ 
+   if (fields.length() > 0) {
+     RootedValue jsValue(cx, promise->value());
+ 
+     // The struct object is constructed based on returns of exported function.
+diff --git a/js/src/wasm/WasmSerialize.cpp b/js/src/wasm/WasmSerialize.cpp
+--- a/js/src/wasm/WasmSerialize.cpp
++++ b/js/src/wasm/WasmSerialize.cpp
+@@ -609,24 +609,22 @@
+   MOZ_TRY(CodePod(coder, &item->immediateTypeId_));
+   return Ok();
+ }
+ 
+ template <CoderMode mode>
+-CoderResult CodeStructField(Coder<mode>& coder,
+-                            CoderArg<mode, StructField> item) {
++CoderResult CodeFieldType(Coder<mode>& coder, CoderArg<mode, FieldType> item) {
+   MOZ_TRY(CodeStorageType(coder, &item->type));
+-  MOZ_TRY(CodePod(coder, &item->offset));
+   MOZ_TRY(CodePod(coder, &item->isMutable));
+   return Ok();
+ }
+ 
+ template <CoderMode mode>
+ CoderResult CodeStructType(Coder<mode>& coder,
+                            CoderArg<mode, StructType> item) {
+-  WASM_VERIFY_SERIALIZATION_FOR_SIZE(wasm::StructType, 136);
+-  MOZ_TRY((CodeVector<mode, StructField, &CodeStructField<mode>>(
+-      coder, &item->fields_)));
++  WASM_VERIFY_SERIALIZATION_FOR_SIZE(wasm::StructType, 184);
++  MOZ_TRY((CodeVector<mode, FieldType, &CodeFieldType<mode>>(coder,
++                                                             &item->fields_)));
+   if constexpr (mode == MODE_DECODE) {
+     if (!item->init()) {
+       return Err(OutOfMemory());
+     }
+   }
+@@ -634,12 +632,11 @@
+ }
+ 
+ template <CoderMode mode>
+ CoderResult CodeArrayType(Coder<mode>& coder, CoderArg<mode, ArrayType> item) {
+   WASM_VERIFY_SERIALIZATION_FOR_SIZE(wasm::ArrayType, 16);
+-  MOZ_TRY(CodeStorageType(coder, &item->elementType_));
+-  MOZ_TRY(CodePod(coder, &item->isMutable_));
++  MOZ_TRY(CodeFieldType(coder, &item->fieldType_));
+   return Ok();
+ }
+ 
+ template <CoderMode mode>
+ CoderResult CodeTypeDef(Coder<mode>& coder, CoderArg<mode, TypeDef> item) {
+diff --git a/js/src/wasm/WasmTypeDef.h b/js/src/wasm/WasmTypeDef.h
+--- a/js/src/wasm/WasmTypeDef.h
++++ b/js/src/wasm/WasmTypeDef.h
+@@ -250,26 +250,37 @@
+ 
+ // The Module owns a dense array of StructType values that represent the
+ // structure types that the module knows about.  It is created from the sparse
+ // array of types in the ModuleMetadata when the Module is created.
+ 
+-struct StructField {
++struct FieldType {
+   StorageType type;
+-  uint32_t offset;
+   bool isMutable;
+ 
++  FieldType() : isMutable(false) {}
++  FieldType(StorageType type, bool isMutable)
++      : type(type), isMutable(isMutable) {}
++
+   HashNumber hash(const RecGroup* recGroup) const {
+     HashNumber hn = 0;
+     hn = mozilla::AddToHash(hn, type.forMatch(recGroup).hash());
+     hn = mozilla::AddToHash(hn, HashNumber(isMutable));
+     return hn;
+   }
+ 
++  // Matches two field types for isorecursive equality. See
++  // "Matching type definitions" in WasmValType.h for more background.
++  static bool matches(const RecGroup* lhsRecGroup, const FieldType& lhs,
++                      const RecGroup* rhsRecGroup, const FieldType& rhs) {
++    return lhs.isMutable == rhs.isMutable &&
++           lhs.type.forMatch(lhsRecGroup) == rhs.type.forMatch(rhsRecGroup);
++  }
++
+   // Checks if two struct fields are compatible in a given subtyping
+   // relationship.
+-  static bool canBeSubTypeOf(const StructField& subType,
+-                             const StructField& superType) {
++  static bool canBeSubTypeOf(const FieldType& subType,
++                             const FieldType& superType) {
+     // Mutable fields are invariant w.r.t. field types
+     if (subType.isMutable && superType.isMutable) {
+       return subType.type == superType.type;
+     }
+ 
+@@ -280,39 +291,34 @@
+ 
+     return false;
+   }
+ };
+ 
+-using StructFieldVector = Vector<StructField, 0, SystemAllocPolicy>;
++using FieldTypeVector = Vector<FieldType, 0, SystemAllocPolicy>;
+ 
++using FieldOffsetVector = Vector<uint32_t, 2, SystemAllocPolicy>;
+ using InlineTraceOffsetVector = Vector<uint32_t, 2, SystemAllocPolicy>;
+ using OutlineTraceOffsetVector = Vector<uint32_t, 0, SystemAllocPolicy>;
+ 
+ class StructType {
+  public:
+-  StructFieldVector fields_;  // Field type, offset, and mutability
+-  uint32_t size_;             // The size of the type in bytes.
++  FieldTypeVector fields_;  // Field type and mutability
++
++  uint32_t size_;  // The size of the type in bytes.
++  FieldOffsetVector fieldOffsets_;
+   InlineTraceOffsetVector inlineTraceOffsets_;
+   OutlineTraceOffsetVector outlineTraceOffsets_;
+ 
+  public:
+   StructType() : size_(0) {}
+ 
+-  explicit StructType(StructFieldVector&& fields)
++  explicit StructType(FieldTypeVector&& fields)
+       : fields_(std::move(fields)), size_(0) {}
+ 
+   StructType(StructType&&) = default;
+   StructType& operator=(StructType&&) = default;
+ 
+-  [[nodiscard]] bool clone(const StructType& src) {
+-    if (!fields_.appendAll(src.fields_)) {
+-      return false;
+-    }
+-    size_ = src.size_;
+-    return true;
+-  }
+-
+   [[nodiscard]] bool init();
+ 
+   bool isDefaultable() const {
+     for (auto& field : fields_) {
+       if (!field.type.isDefaultable()) {
+@@ -320,13 +326,17 @@
+       }
+     }
+     return true;
+   }
+ 
++  uint32_t fieldOffset(uint32_t fieldIndex) const {
++    return fieldOffsets_[fieldIndex];
++  }
++
+   HashNumber hash(const RecGroup* recGroup) const {
+     HashNumber hn = 0;
+-    for (const StructField& field : fields_) {
++    for (const FieldType& field : fields_) {
+       hn = mozilla::AddToHash(hn, field.hash(recGroup));
+     }
+     return hn;
+   }
+ 
+@@ -336,15 +346,13 @@
+                       const RecGroup* rhsRecGroup, const StructType& rhs) {
+     if (lhs.fields_.length() != rhs.fields_.length()) {
+       return false;
+     }
+     for (uint32_t i = 0; i < lhs.fields_.length(); i++) {
+-      const StructField& lhsField = lhs.fields_[i];
+-      const StructField& rhsField = rhs.fields_[i];
+-      if (lhsField.isMutable != rhsField.isMutable ||
+-          lhsField.type.forMatch(lhsRecGroup) !=
+-              rhsField.type.forMatch(rhsRecGroup)) {
++      const FieldType& lhsField = lhs.fields_[i];
++      const FieldType& rhsField = rhs.fields_[i];
++      if (!FieldType::matches(lhsRecGroup, lhsField, rhsRecGroup, rhsField)) {
+         return false;
+       }
+     }
+     return true;
+   }
+@@ -358,12 +366,12 @@
+       return false;
+     }
+ 
+     // Every field that is in both superType and subType must be compatible
+     for (uint32_t i = 0; i < superType.fields_.length(); i++) {
+-      if (!StructField::canBeSubTypeOf(subType.fields_[i],
+-                                       superType.fields_[i])) {
++      if (!FieldType::canBeSubTypeOf(subType.fields_[i],
++                                     superType.fields_[i])) {
+         return false;
+       }
+     }
+     return true;
+   }
+@@ -409,64 +417,43 @@
+ // Array types
+ 
+ class ArrayType {
+  public:
+   // The kind of value stored in this array
+-  StorageType elementType_;
+-  // Whether this array is mutable or not
+-  bool isMutable_;
++  FieldType fieldType_;
+ 
+  public:
+-  ArrayType() : isMutable_(false) {}
++  ArrayType() = default;
+   ArrayType(StorageType elementType, bool isMutable)
+-      : elementType_(elementType), isMutable_(isMutable) {}
++      : fieldType_(FieldType(elementType, isMutable)) {}
+ 
+   ArrayType(const ArrayType&) = default;
+   ArrayType& operator=(const ArrayType&) = default;
+ 
+   ArrayType(ArrayType&&) = default;
+   ArrayType& operator=(ArrayType&&) = default;
+ 
+-  [[nodiscard]] bool clone(const ArrayType& src) {
+-    elementType_ = src.elementType_;
+-    isMutable_ = src.isMutable_;
+-    return true;
+-  }
+-
+-  bool isDefaultable() const { return elementType_.isDefaultable(); }
++  StorageType elementType() const { return fieldType_.type; }
++  bool isMutable() const { return fieldType_.isMutable; }
++  bool isDefaultable() const { return elementType().isDefaultable(); }
+ 
+   HashNumber hash(const RecGroup* recGroup) const {
+-    HashNumber hn = 0;
+-    hn = mozilla::AddToHash(hn, elementType_.forMatch(recGroup).hash());
+-    hn = mozilla::AddToHash(hn, HashNumber(isMutable_));
+-    return hn;
++    return fieldType_.hash(recGroup);
+   }
+ 
+   // Matches two array types for isorecursive equality. See
+   // "Matching type definitions" in WasmValType.h for more background.
+   static bool matches(const RecGroup* lhsRecGroup, const ArrayType& lhs,
+                       const RecGroup* rhsRecGroup, const ArrayType& rhs) {
+-    return lhs.isMutable_ == rhs.isMutable_ &&
+-           lhs.elementType_.forMatch(lhsRecGroup) ==
+-               rhs.elementType_.forMatch(rhsRecGroup);
++    return FieldType::matches(lhsRecGroup, lhs.fieldType_, rhsRecGroup,
++                              rhs.fieldType_);
+   }
+ 
+   // Checks if two arrays are compatible in a given subtyping relationship.
+   static bool canBeSubTypeOf(const ArrayType& subType,
+                              const ArrayType& superType) {
+-    // Mutable fields are invariant w.r.t. field types
+-    if (subType.isMutable_ && superType.isMutable_) {
+-      return subType.elementType_ == superType.elementType_;
+-    }
+-
+-    // Immutable fields are covariant w.r.t. field types
+-    if (!subType.isMutable_ && !superType.isMutable_) {
+-      return StorageType::isSubTypeOf(subType.elementType_,
+-                                      superType.elementType_);
+-    }
+-
+-    return true;
++    return FieldType::canBeSubTypeOf(subType.fieldType_, superType.fieldType_);
+   }
+ 
+   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+ };
+ 
+@@ -1003,11 +990,11 @@
+           }
+           break;
+         }
+         case TypeDefKind::Array: {
+           const ArrayType& arrayType = typeDef.arrayType();
+-          visitStorageType(arrayType.elementType_);
++          visitStorageType(arrayType.elementType());
+           break;
+         }
+         case TypeDefKind::None: {
+           MOZ_CRASH();
+         }
+diff --git a/js/src/wasm/WasmTypeDef.cpp b/js/src/wasm/WasmTypeDef.cpp
+--- a/js/src/wasm/WasmTypeDef.cpp
++++ b/js/src/wasm/WasmTypeDef.cpp
+@@ -330,23 +330,25 @@
+   return size;
+ }
+ 
+ bool StructType::init() {
+   StructLayout layout;
+-  for (StructField& field : fields_) {
++  for (FieldType& field : fields_) {
+     CheckedInt32 offset = layout.addField(field.type);
+     if (!offset.isValid()) {
+       return false;
+     }
+-    field.offset = offset.value();
++    if (!fieldOffsets_.append(offset.value())) {
++      return false;
++    }
+     if (!field.type.isRefRepr()) {
+       continue;
+     }
+ 
+     bool isOutline;
+     uint32_t adjustedOffset;
+-    WasmStructObject::fieldOffsetToAreaAndOffset(field.type, field.offset,
++    WasmStructObject::fieldOffsetToAreaAndOffset(field.type, offset.value(),
+                                                  &isOutline, &adjustedOffset);
+     if (isOutline) {
+       if (!outlineTraceOffsets_.append(adjustedOffset)) {
+         return false;
+       }
+@@ -367,11 +369,11 @@
+ }
+ 
+ /* static */
+ bool StructType::createImmutable(const ValTypeVector& types,
+                                  StructType* struct_) {
+-  StructFieldVector fields;
++  FieldTypeVector fields;
+   if (!fields.resize(types.length())) {
+     return false;
+   }
+   for (size_t i = 0; i < types.length(); i++) {
+     fields[i].type = StorageType(types[i].packed());
+diff --git a/js/src/wasm/WasmValidate.cpp b/js/src/wasm/WasmValidate.cpp
+--- a/js/src/wasm/WasmValidate.cpp
++++ b/js/src/wasm/WasmValidate.cpp
+@@ -1620,11 +1620,11 @@
+ 
+   if (numFields > MaxStructFields) {
+     return d.fail("too many fields in struct");
+   }
+ 
+-  StructFieldVector fields;
++  FieldTypeVector fields;
+   if (!fields.resize(numFields)) {
+     return false;
+   }
+ 
+   for (uint32_t i = 0; i < numFields; i++) {
+
